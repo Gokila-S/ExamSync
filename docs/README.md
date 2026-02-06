@@ -1,6 +1,4 @@
-# Exam Hall Allocator System - Documentation Index
-
-## 📚 Complete Documentation for Interview Preparation
+## 📚 Complete Documentation
 
 ---
 
@@ -236,40 +234,6 @@
 - Review all 7 files
 - Practice explaining diagrams
 - Test your demo flow
-
----
-
-## Additional Resources
-
-### Recommended Reading
-- RESTful API Design Best Practices
-- PostgreSQL Performance Tuning
-- React Component Patterns
-- Node.js Error Handling
-
-### Related Projects to Compare
-- University Course Registration Systems
-- Hotel Room Booking Systems
-- Airline Seat Reservation Systems
-
-(Similar allocation problems with different constraints)
-
----
-
-## Contact & Support
-
-**Project Repository:** [Add GitHub link here]  
-**Demo Video:** [Add YouTube link here]  
-**Live Demo:** [Add deployment link here]
-
----
-
-## Version History
-
-- v1.0 (Current) - Initial documentation for core features
-- Future: Add advanced features like mobile app, analytics dashboard
-
----
 
 **Good luck with your interviews! 🚀**
 

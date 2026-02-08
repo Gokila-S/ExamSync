@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-neutral-50 text-neutral-900 font-sans antialiased;
+  }
+  
+  *::-webkit-scrollbar {
+    width: 10px;
+  }
+  
+  *::-webkit-scrollbar-track {
+    @apply bg-neutral-100;
+  }
+  
+  *::-webkit-scrollbar-thumb {
+    @apply bg-neutral-300 hover:bg-neutral-400 rounded-lg;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-xl shadow-sm border border-neutral-200 p-6 transition-shadow duration-200;
+  }
+  
+  .btn {
+    @apply px-6 py-2.5 rounded-lg font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2;
+  }
+  
+  .btn-primary {
+    @apply bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500;
+  }
+  
+  .btn-secondary {
+    @apply bg-neutral-100 text-neutral-700 hover:bg-neutral-200 border border-neutral-300 focus:ring-neutral-500;
+  }
+  
+  .btn-success {
+    @apply bg-success-600 text-white hover:bg-success-700 focus:ring-success-500;
+  }
+  
+  .btn-danger {
+    @apply bg-danger-600 text-white hover:bg-danger-700 focus:ring-danger-500;
+  }
+  
+  .input {
+    @apply w-full px-4 py-2.5 bg-white border border-neutral-300 rounded-lg;
+    @apply text-neutral-900 placeholder-neutral-400;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all;
+  }
+  
+  .stat-card {
+    @apply card hover:shadow-md;
+  }
+  
+  .stat-card-primary {
+    @apply bg-white border-primary-200 shadow-sm hover:shadow-md transition-shadow duration-200;
+  }
+  
+  .stat-card-success {
+    @apply bg-white border-success-200 shadow-sm hover:shadow-md transition-shadow duration-200;
+  }
+  
+  .stat-card-warning {
+    @apply bg-white border-warning-200 shadow-sm hover:shadow-md transition-shadow duration-200;
+  }
+  
+  .data-table {
+    @apply w-full bg-white rounded-lg overflow-hidden;
+  }
+  
+  .data-table th {
+    @apply px-6 py-3.5 text-left text-xs font-semibold text-neutral-700 uppercase tracking-wider bg-neutral-50 border-b border-neutral-200;
+  }
+  
+  .data-table tbody tr {
+    @apply border-b border-neutral-100 hover:bg-neutral-50 transition-colors;
+  }
+  
+  .data-table td {
+    @apply px-6 py-4 text-sm text-neutral-700;
+  }
+  
+  .badge {
+    @apply px-3 py-1 text-xs font-semibold rounded-full;
+  }
+  
+  .badge-success {
+    @apply bg-success-100 text-success-700 border border-success-200;
+  }
+  
+  .badge-warning {
+    @apply bg-warning-100 text-warning-700 border border-warning-200;
+  }
+  
+  .badge-danger {
+    @apply bg-danger-100 text-danger-700 border border-danger-200;
+  }
+  
+  .badge-info {
+    @apply bg-primary-100 text-primary-700 border border-primary-200;
+  }
+  
+  .metric-value {
+    @apply text-5xl font-extrabold tracking-tight;
+  }
+  
+  .sidebar {
+    @apply bg-white border-r border-neutral-200 shadow-sm;
+  }
+}

@@ -1,8 +1,25 @@
-const { pool } = require('../config/database');
+/**
+ * Allocation Controller
+ * Handles seat allocation operations with multiple strategies
+ * 
+ * INTERVIEW POINT: This controller demonstrates:
+ * - Service layer pattern (business logic in service)
+ * - Transaction management for data consistency
+ * - Multiple allocation strategies
+ */
 
-// Generate seat allocations for an exam
+const { pool } = require('../config/database');
+const allocationService = require('../services/allocationService');
+
+/**
+ * Generate seat allocations for an exam
+ * POST /api/allocations/generate/:examId
+ * 
+ * Body: { strategy: 'alternate' | 'row-based' | 'snake' | 'sequential' }
+ */
 exports.generateAllocations = async (req, res) => {
   const { examId } = req.params;
+  const { strategy = 'alternate' } = req.body; // Default to alternate branch mixing
   const client = await pool.connect();
 
   try {
@@ -24,12 +41,12 @@ exports.generateAllocations = async (req, res) => {
     // Check if already allocated
     if (exam.is_allocated) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ message: 'Seats already allocated for this exam' });
+      return res.status(400).json({ message: 'Seats already allocated for this exam. Reset first to reallocate.' });
     }
 
     // 2. Get all students for this semester
     const studentsResult = await client.query(
-      'SELECT * FROM students WHERE semester = $1 AND is_active = true ORDER BY roll_no',
+      'SELECT * FROM students WHERE semester = $1 AND is_active = true ORDER BY branch, roll_no',
       [exam.semester]
     );
 
@@ -52,63 +69,62 @@ exports.generateAllocations = async (req, res) => {
       return res.status(400).json({ message: 'No halls available' });
     }
 
-    // 4. Calculate total capacity
-    const totalCapacity = halls.reduce((sum, hall) => sum + hall.capacity, 0);
-
-    if (students.length > totalCapacity) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ 
-        message: `Insufficient capacity. Students: ${students.length}, Available seats: ${totalCapacity}` 
-      });
-    }
-
-    // 5. Get blocked seats
+    // 4. Get blocked seats for all halls
     const blockedResult = await client.query(
       'SELECT hall_id, seat_position FROM blocked_seats'
     );
-    const blockedSeats = new Set(
-      blockedResult.rows.map(b => `${b.hall_id}-${b.seat_position}`)
+
+    // Create a Map of hall_id -> blocked seat positions
+    const blockedSeatsMap = new Map();
+    blockedResult.rows.forEach(b => {
+      if (!blockedSeatsMap.has(b.hall_id)) {
+        blockedSeatsMap.set(b.hall_id, []);
+      }
+      blockedSeatsMap.get(b.hall_id).push(b.seat_position);
+    });
+
+    // 5. Run allocation algorithm
+    const allocationResult = allocationService.allocateSeats(
+      students,
+      halls,
+      blockedSeatsMap,
+      strategy
     );
 
-    // 6. Perform allocation using branch mixing algorithm
-    const allocations = [];
-    let studentIndex = 0;
+    // 6. Get statistics
+    const stats = allocationService.getAllocationStats(allocationResult.allocations);
 
-    for (const hall of halls) {
-      if (studentIndex >= students.length) break;
+    // 7. Insert allocations using batch insert for performance
+    const insertValues = allocationResult.allocations.map((alloc, idx) =>
+      `($1, $${idx * 3 + 2}, $${idx * 3 + 3}, $${idx * 3 + 4})`
+    ).join(', ');
 
-      const { rows, columns, capacity } = hall;
-      let seatsAllocated = 0;
+    const insertParams = [examId];
+    allocationResult.allocations.forEach(alloc => {
+      insertParams.push(alloc.student_id, alloc.hall_id, alloc.seat_position);
+    });
 
-      for (let row = 1; row <= rows && seatsAllocated < capacity; row++) {
-        for (let col = 1; col <= columns && seatsAllocated < capacity; col++) {
-          const seatPosition = `${String.fromCharCode(64 + row)}${col}`;
-          const seatKey = `${hall.id}-${seatPosition}`;
+    // Use batch insert for better performance
+    // INTERVIEW POINT: Batch insert is 10-100x faster than individual inserts
+    if (allocationResult.allocations.length > 0) {
+      const batchSize = 100;
+      for (let i = 0; i < allocationResult.allocations.length; i += batchSize) {
+        const batch = allocationResult.allocations.slice(i, i + batchSize);
+        const values = batch.map((_, idx) =>
+          `($1, $${idx * 3 + 2}, $${idx * 3 + 3}, $${idx * 3 + 4})`
+        ).join(', ');
 
-          // Skip blocked seats
-          if (blockedSeats.has(seatKey)) continue;
+        const params = [examId];
+        batch.forEach(alloc => {
+          params.push(alloc.student_id, alloc.hall_id, alloc.seat_position);
+        });
 
-          // Allocate seat to student
-          if (studentIndex < students.length) {
-            allocations.push({
-              exam_id: examId,
-              student_id: students[studentIndex].id,
-              hall_id: hall.id,
-              seat_position: seatPosition
-            });
-            studentIndex++;
-            seatsAllocated++;
-          }
-        }
+        await client.query(
+          `INSERT INTO allocations (exam_id, student_id, hall_id, seat_position) 
+           VALUES ${values}`,
+          params
+        );
       }
-    }
-
-    // 7. Insert allocations
-    for (const allocation of allocations) {
-      await client.query(
-        'INSERT INTO allocations (exam_id, student_id, hall_id, seat_position) VALUES ($1, $2, $3, $4)',
-        [allocation.exam_id, allocation.student_id, allocation.hall_id, allocation.seat_position]
-      );
     }
 
     // 8. Mark exam as allocated
@@ -121,24 +137,30 @@ exports.generateAllocations = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Seat allocation completed successfully',
+      message: `Seat allocation completed using "${strategy}" strategy`,
       data: {
-        totalStudents: students.length,
-        allocatedSeats: allocations.length,
-        hallsUsed: [...new Set(allocations.map(a => a.hall_id))].length
+        ...allocationResult.summary,
+        branchMixingScore: stats.branchMixingScore,
+        branchDistribution: stats.byBranch
       }
     });
 
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Allocation error:', error);
-    res.status(500).json({ message: 'Failed to generate allocations', error: error.message });
+    res.status(500).json({
+      message: 'Failed to generate allocations',
+      error: error.message
+    });
   } finally {
     client.release();
   }
 };
 
-// Get allocations for a specific exam
+/**
+ * Get allocations for a specific exam
+ * GET /api/allocations/exam/:examId
+ */
 exports.getAllocationsByExam = async (req, res) => {
   const { examId } = req.params;
 
@@ -147,11 +169,15 @@ exports.getAllocationsByExam = async (req, res) => {
       SELECT 
         a.id,
         a.seat_position,
+        s.id as student_id,
         s.roll_no,
         s.name AS student_name,
         s.branch,
+        h.id as hall_id,
         h.name AS hall_name,
-        h.building
+        h.building,
+        h.rows,
+        h.columns
       FROM allocations a
       JOIN students s ON a.student_id = s.id
       JOIN halls h ON a.hall_id = h.id
@@ -159,9 +185,33 @@ exports.getAllocationsByExam = async (req, res) => {
       ORDER BY h.name, a.seat_position
     `, [examId]);
 
+    // Group by hall for better organization
+    const hallsMap = {};
+    result.rows.forEach(row => {
+      if (!hallsMap[row.hall_id]) {
+        hallsMap[row.hall_id] = {
+          id: row.hall_id,
+          name: row.hall_name,
+          building: row.building,
+          rows: row.rows,
+          columns: row.columns,
+          allocations: []
+        };
+      }
+      hallsMap[row.hall_id].allocations.push({
+        id: row.id,
+        seat_position: row.seat_position,
+        student_id: row.student_id,
+        roll_no: row.roll_no,
+        student_name: row.student_name,
+        branch: row.branch
+      });
+    });
+
     res.json({
       success: true,
-      data: result.rows
+      data: result.rows,
+      hallsGrouped: Object.values(hallsMap)
     });
   } catch (error) {
     console.error('Get allocations error:', error);
@@ -169,7 +219,10 @@ exports.getAllocationsByExam = async (req, res) => {
   }
 };
 
-// Get allocation details for a student
+/**
+ * Get allocation details for a student
+ * GET /api/allocations/student/:studentId
+ */
 exports.getAllocationsByStudent = async (req, res) => {
   const { studentId } = req.params;
 
@@ -201,7 +254,10 @@ exports.getAllocationsByStudent = async (req, res) => {
   }
 };
 
-// Delete allocations for an exam (reset)
+/**
+ * Delete allocations for an exam (reset)
+ * DELETE /api/allocations/exam/:examId
+ */
 exports.deleteAllocations = async (req, res) => {
   const { examId } = req.params;
   const client = await pool.connect();
@@ -230,7 +286,10 @@ exports.deleteAllocations = async (req, res) => {
   }
 };
 
-// Get allocation summary for dashboard
+/**
+ * Get allocation summary for dashboard
+ * GET /api/allocations/summary
+ */
 exports.getAllocationSummary = async (req, res) => {
   try {
     const result = await pool.query(`
@@ -251,7 +310,10 @@ exports.getAllocationSummary = async (req, res) => {
   }
 };
 
-// Get hall seating map for an exam
+/**
+ * Get hall seating map for an exam
+ * GET /api/allocations/seating-map/:examId/:hallId
+ */
 exports.getHallSeatingMap = async (req, res) => {
   const { examId, hallId } = req.params;
 
@@ -278,24 +340,74 @@ exports.getHallSeatingMap = async (req, res) => {
       FROM allocations a
       JOIN students s ON a.student_id = s.id
       WHERE a.exam_id = $1 AND a.hall_id = $2
+      ORDER BY a.seat_position
     `, [examId, hallId]);
 
     // Get blocked seats
     const blockedResult = await pool.query(
-      'SELECT seat_position FROM blocked_seats WHERE hall_id = $1',
+      'SELECT seat_position, reason FROM blocked_seats WHERE hall_id = $1',
       [hallId]
     );
+
+    // Calculate branch distribution for this hall
+    const branchCounts = {};
+    allocationsResult.rows.forEach(alloc => {
+      if (!branchCounts[alloc.branch]) branchCounts[alloc.branch] = 0;
+      branchCounts[alloc.branch]++;
+    });
 
     res.json({
       success: true,
       data: {
         hall,
         allocations: allocationsResult.rows,
-        blockedSeats: blockedResult.rows.map(b => b.seat_position)
+        blockedSeats: blockedResult.rows.map(b => b.seat_position),
+        stats: {
+          totalAllocated: allocationsResult.rows.length,
+          branchDistribution: branchCounts
+        }
       }
     });
   } catch (error) {
     console.error('Get seating map error:', error);
     res.status(500).json({ message: 'Failed to retrieve seating map' });
   }
+};
+
+/**
+ * Get available allocation strategies
+ * GET /api/allocations/strategies
+ */
+exports.getStrategies = async (req, res) => {
+  const strategies = [
+    {
+      id: 'alternate',
+      name: 'Alternate Branch Mixing',
+      description: 'Students from different branches are placed alternately (CSE → ECE → MECH → CSE...)',
+      recommended: true
+    },
+    {
+      id: 'row-based',
+      name: 'Row-Based Mixing',
+      description: 'Each row gets students from one branch, rows alternate between branches',
+      recommended: false
+    },
+    {
+      id: 'snake',
+      name: 'Snake Pattern',
+      description: 'Branch mixing with snake pattern seating (alternate row directions)',
+      recommended: false
+    },
+    {
+      id: 'sequential',
+      name: 'Sequential',
+      description: 'Simple allocation by roll number order (no mixing)',
+      recommended: false
+    }
+  ];
+
+  res.json({
+    success: true,
+    data: strategies
+  });
 };

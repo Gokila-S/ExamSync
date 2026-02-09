@@ -16,6 +16,8 @@ const studentRoutes = require('./routes/studentRoutes');
 const examRoutes = require('./routes/examRoutes');
 const hallRoutes = require('./routes/hallRoutes');
 const allocationRoutes = require('./routes/allocationRoutes');
+const invigilatorRoutes = require('./routes/invigilatorRoutes');
+const exportRoutes = require('./routes/exportRoutes');
 
 // Initialize express app
 const app = express();
@@ -52,6 +54,8 @@ app.use('/api/students', studentRoutes);
 app.use('/api/exams', examRoutes);
 app.use('/api/halls', hallRoutes);
 app.use('/api/allocations', allocationRoutes);
+app.use('/api/invigilators', invigilatorRoutes);
+app.use('/api/exports', exportRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -89,7 +93,7 @@ const server = app.listen(PORT, async () => {
   console.log(`📍 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📊 Database: ${process.env.DB_NAME}`);
-  
+
   // Test database connection
   try {
     await pool.query('SELECT NOW()');
@@ -97,7 +101,7 @@ const server = app.listen(PORT, async () => {
   } catch (error) {
     console.error('✗ Database connection failed:', error.message);
   }
-  
+
   console.log('\n📚 API Endpoints:');
   console.log(`   GET    http://localhost:${PORT}/`);
   console.log(`   GET    http://localhost:${PORT}/health`);

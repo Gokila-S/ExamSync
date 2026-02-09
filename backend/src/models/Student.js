@@ -18,6 +18,21 @@ class Student {
   }
 
   /**
+   * Find multiple students by roll numbers (for duplicate checking)
+   */
+  static async findByRollNumbers(rollNumbers) {
+    if (!rollNumbers || rollNumbers.length === 0) return [];
+    
+    const placeholders = rollNumbers.map((_, i) => `$${i + 1}`).join(',');
+    const result = await query(
+      `SELECT roll_no, name, email, branch FROM students 
+       WHERE roll_no IN (${placeholders}) AND is_active = TRUE`,
+      rollNumbers
+    );
+    return result.rows;
+  }
+
+  /**
    * Find student by ID
    */
   static async findById(id) {
@@ -29,46 +44,101 @@ class Student {
   }
 
   /**
-   * Get all students with filters
+   * Get all students with advanced filters, search, pagination, and sorting
+   * INTERVIEW POINT: Server-side filtering and pagination for scalability
    */
   static async findAll(filters = {}) {
-    const { branch, semester, limit = 100, offset = 0 } = filters;
+    const { 
+      branch,           // Single branch or array of branches
+      semester,         // Single semester or array
+      search,           // Search term for roll_no, name, email
+      allocated,        // Filter by allocation status (true/false)
+      hasAccessibility, // Filter students with accessibility needs
+      limit = 100, 
+      offset = 0,
+      sortBy = 'roll_no', // Column to sort by
+      sortOrder = 'ASC'   // ASC or DESC
+    } = filters;
     
     let queryText = 'SELECT * FROM students WHERE is_active = TRUE';
     const params = [];
     let paramCount = 1;
 
+    // Multi-select branch filter
     if (branch) {
-      queryText += ` AND branch = $${paramCount}`;
-      params.push(branch);
-      paramCount++;
+      const branches = Array.isArray(branch) ? branch : [branch];
+      const placeholders = branches.map((_, i) => `$${paramCount + i}`).join(',');
+      queryText += ` AND branch IN (${placeholders})`;
+      params.push(...branches);
+      paramCount += branches.length;
     }
 
+    // Multi-select semester filter
     if (semester) {
-      queryText += ` AND semester = $${paramCount}`;
-      params.push(semester);
+      const semesters = Array.isArray(semester) ? semester : [semester];
+      const placeholders = semesters.map((_, i) => `$${paramCount + i}`).join(',');
+      queryText += ` AND semester IN (${placeholders})`;
+      params.push(...semesters.map(s => parseInt(s)));
+      paramCount += semesters.length;
+    }
+
+    // Smart search across roll_no, name, and email
+    if (search) {
+      queryText += ` AND (
+        roll_no ILIKE $${paramCount} OR 
+        name ILIKE $${paramCount} OR 
+        email ILIKE $${paramCount}
+      )`;
+      params.push(`%${search}%`);
       paramCount++;
     }
 
-    queryText += ` ORDER BY roll_no LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    // Filter by allocation status (requires join with allocations table)
+    if (allocated !== undefined) {
+      if (allocated === true || allocated === 'true') {
+        queryText += ` AND EXISTS (
+          SELECT 1 FROM allocations a WHERE a.student_id = students.id
+        )`;
+      } else {
+        queryText += ` AND NOT EXISTS (
+          SELECT 1 FROM allocations a WHERE a.student_id = students.id
+        )`;
+      }
+    }
+
+    // Filter by accessibility needs
+    if (hasAccessibility !== undefined) {
+      if (hasAccessibility === true || hasAccessibility === 'true') {
+        queryText += ` AND accessibility_needs IS NOT NULL AND accessibility_needs != ''`;
+      } else {
+        queryText += ` AND (accessibility_needs IS NULL OR accessibility_needs = '')`;
+      }
+    }
+
+    // Build count query (before sorting and pagination)
+    let countQuery = queryText.replace('SELECT *', 'SELECT COUNT(*)');
+    const countResult = await query(countQuery, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    // Add sorting (sanitize sortBy to prevent SQL injection)
+    const allowedSortColumns = ['roll_no', 'name', 'email', 'branch', 'semester', 'created_at'];
+    const safeSortBy = allowedSortColumns.includes(sortBy) ? sortBy : 'roll_no';
+    const safeSortOrder = sortOrder.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+    queryText += ` ORDER BY ${safeSortBy} ${safeSortOrder}`;
+
+    // Add pagination
+    queryText += ` LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
     params.push(limit, offset);
 
     const result = await query(queryText, params);
-    
-    // Get total count
-    let countQuery = 'SELECT COUNT(*) FROM students WHERE is_active = TRUE';
-    const countParams = [];
-    if (branch) {
-      countQuery += ' AND branch = $1';
-      countParams.push(branch);
-    }
-    const countResult = await query(countQuery, countParams);
 
     return {
       students: result.rows,
-      total: parseInt(countResult.rows[0].count),
+      total,
       limit,
-      offset
+      offset,
+      page: Math.floor(offset / limit) + 1,
+      totalPages: Math.ceil(total / limit)
     };
   }
 

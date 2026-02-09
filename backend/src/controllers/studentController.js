@@ -4,24 +4,41 @@
  */
 
 const Student = require('../models/Student');
+const csvService = require('../services/csvService');
 const fs = require('fs');
-const csv = require('csv-parser');
 const { promisify } = require('util');
 const unlinkAsync = promisify(fs.unlink);
 
 /**
- * Get all students
+ * Get all students with advanced filters, search, and pagination
  * GET /api/students
+ * Query params: branch[], semester[], search, allocated, hasAccessibility, limit, offset, sortBy, sortOrder
+ * INTERVIEW POINT: Server-side filtering and pagination for scalability
  */
 exports.getAllStudents = async (req, res, next) => {
   try {
-    const { branch, semester, limit, offset } = req.query;
+    const { 
+      branch,           // Can be array or single value
+      semester,         // Can be array or single value
+      search,           // Search term
+      allocated,        // true/false
+      hasAccessibility, // true/false
+      limit, 
+      offset,
+      sortBy,
+      sortOrder
+    } = req.query;
     
     const result = await Student.findAll({
-      branch,
-      semester: semester ? parseInt(semester) : undefined,
-      limit: limit ? parseInt(limit) : 100,
-      offset: offset ? parseInt(offset) : 0
+      branch: branch ? (Array.isArray(branch) ? branch : [branch]) : undefined,
+      semester: semester ? (Array.isArray(semester) ? semester : [semester]) : undefined,
+      search,
+      allocated,
+      hasAccessibility,
+      limit: limit ? parseInt(limit) : 50,
+      offset: offset ? parseInt(offset) : 0,
+      sortBy: sortBy || 'roll_no',
+      sortOrder: sortOrder || 'ASC'
     });
 
     res.json({
@@ -149,10 +166,13 @@ exports.deleteStudent = async (req, res, next) => {
 };
 
 /**
- * Upload students via CSV
+ * Upload students via CSV or Excel with pre-upload validation
  * POST /api/students/upload
+ * INTERVIEW POINT: Advanced validation with duplicate detection and summary reports
  */
-exports.uploadCSV = async (req, res, next) => {
+exports.uploadStudents = async (req, res, next) => {
+  let filePath = null;
+
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -161,62 +181,76 @@ exports.uploadCSV = async (req, res, next) => {
       });
     }
 
-    const students = [];
-    const errors = [];
+    filePath = req.file.path;
 
-    // Parse CSV
-    fs.createReadStream(req.file.path)
-      .pipe(csv())
-      .on('data', (row) => {
-        // Validate row
-        if (!row.roll_no || !row.name || !row.email || !row.branch || !row.semester) {
-          errors.push(`Invalid row: ${JSON.stringify(row)}`);
-          return;
-        }
-
-        students.push({
-          roll_no: row.roll_no.trim(),
-          name: row.name.trim(),
-          email: row.email.trim(),
-          branch: row.branch.trim(),
-          semester: parseInt(row.semester)
-        });
-      })
-      .on('end', async () => {
-        try {
-          // Delete uploaded file
-          await unlinkAsync(req.file.path);
-
-          if (students.length === 0) {
-            return res.status(400).json({
-              success: false,
-              message: 'No valid students found in CSV',
-              errors
-            });
-          }
-
-          // Bulk insert
-          const result = await Student.bulkCreate(students);
-
-          res.json({
-            success: true,
-            message: `${result.length} students uploaded successfully`,
-            data: {
-              count: result.length,
-              errors: errors.length > 0 ? errors : undefined
-            }
-          });
-        } catch (error) {
-          next(error);
-        }
-      })
-      .on('error', (error) => {
-        unlinkAsync(req.file.path);
-        next(error);
+    // Parse the file
+    const parseResult = await csvService.parseFile(filePath);
+    
+    if (!parseResult.students || parseResult.students.length === 0) {
+      await unlinkAsync(filePath);
+      return res.status(400).json({
+        success: false,
+        message: 'No valid students found in the file',
+        errors: parseResult.errors || []
       });
+    }
+
+    // Check for duplicates within the file
+    const duplicatesInFile = csvService.checkDuplicates(parseResult.students);
+    
+    // Check for existing students in database
+    const existingInDB = await csvService.checkExistingStudents(parseResult.students);
+
+    // Filter out duplicates for insertion
+    const existingRollNos = new Set(existingInDB.map(s => s.roll_no));
+    const duplicateRollNos = new Set(duplicatesInFile.map(d => d.roll_no));
+    
+    const studentsToInsert = parseResult.students.filter(s => 
+      !existingRollNos.has(s.roll_no) && !duplicateRollNos.has(s.roll_no)
+    );
+
+    let successfulInserts = 0;
+    let failedInserts = 0;
+
+    // Bulk insert valid students
+    if (studentsToInsert.length > 0) {
+      try {
+        const inserted = await Student.bulkCreate(studentsToInsert);
+        successfulInserts = inserted.length;
+      } catch (error) {
+        console.error('Bulk insert error:', error);
+        failedInserts = studentsToInsert.length;
+      }
+    }
+
+    // Delete uploaded file
+    await unlinkAsync(filePath);
+
+    // Generate summary report
+    const summary = csvService.generateUploadSummary({
+      totalRows: parseResult.totalRows,
+      validStudents: parseResult.students.length,
+      invalidRows: parseResult.errors,
+      duplicatesInFile,
+      existingInDB,
+      successfulInserts,
+      failedInserts
+    });
+
+    res.json({
+      success: successfulInserts > 0,
+      message: `Upload complete: ${successfulInserts} added, ${summary.summary.failed} failed`,
+      data: summary
+    });
+
   } catch (error) {
-    if (req.file) {
-      await unlinkAsync(req.file.path);
+    // Clean up file on error
+    if (filePath) {
+      try {
+        await unlinkAsync(filePath);
+      } catch (e) {
+        console.error('Failed to delete file:', e);
+      }
     }
     next(error);
   }
@@ -233,6 +267,39 @@ exports.getBranchStats = async (req, res, next) => {
     res.json({
       success: true,
       data: { stats }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Download CSV template
+ * GET /api/students/template
+ */
+exports.downloadTemplate = async (req, res, next) => {
+  try {
+    const csvContent = 'roll_no,name,email,branch,semester\nCS101,John Doe,john@example.com,CSE,3\nEC102,Jane Smith,jane@example.com,ECE,3\n';
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=student_upload_template.csv');
+    res.send(csvContent);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get stats (total students)
+ * GET /api/students/stats
+ */
+exports.getStats = async (req, res, next) => {
+  try {
+    const stats = await Student.getBranchWiseCount();
+
+    res.json({
+      success: true,
+      data: stats
     });
   } catch (error) {
     next(error);
